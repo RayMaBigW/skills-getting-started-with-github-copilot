@@ -1,50 +1,114 @@
-"""Regression tests for participant unregistration."""
+"""Regression tests for participant unregistration using AAA."""
 
 from copy import deepcopy
-import unittest
 
-from fastapi.testclient import TestClient
-
-from src.app import activities, app
+from src.app import activities
 
 
-class UnregisterTests(unittest.TestCase):
-    def setUp(self):
-        self.original_activities = deepcopy(activities)
-        self.client = TestClient(app)
+def test_unregister_removes_only_selected_participant(client, activity_snapshot):
+    # Arrange
+    email = activity_snapshot["Chess Club"]["participants"][0]
+    expected = deepcopy(activity_snapshot)
+    expected["Chess Club"]["participants"].remove(email)
 
-    def tearDown(self):
-        activities.clear()
-        activities.update(self.original_activities)
-        self.client.close()
+    # Act
+    response = client.delete("/activities/Chess%20Club/signup", params={"email": email})
+    listing = client.get("/activities")
 
-    def test_unregister_removes_only_selected_participant(self):
-        response = self.client.delete(
-            "/activities/Chess%20Club/signup",
-            params={"email": "michael@mergington.edu"},
-        )
-        self.assertEqual(response.status_code, 200)
-        participants = self.client.get("/activities").json()["Chess Club"]["participants"]
-        self.assertEqual(participants, ["daniel@mergington.edu"])
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"message": f"Unregistered {email} from Chess Club"}
+    assert listing.status_code == 200
+    assert listing.json() == expected
+    assert activities == expected
 
-    def test_unregister_unknown_activity(self):
-        response = self.client.delete(
-            "/activities/Unknown/signup", params={"email": "michael@mergington.edu"}
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(activities, self.original_activities)
 
-    def test_unregister_missing_participant(self):
-        response = self.client.delete(
-            "/activities/Chess%20Club/signup", params={"email": "missing@mergington.edu"}
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(activities, self.original_activities)
+def test_unregister_unknown_activity(client, activity_snapshot):
+    # Arrange
+    endpoint = "/activities/Unknown/signup"
+    params = {"email": "michael@mergington.edu"}
 
-    def test_participant_can_register_again_after_removal(self):
-        endpoint = "/activities/Chess%20Club/signup"
-        params = {"email": "michael@mergington.edu"}
-        self.assertEqual(self.client.delete(endpoint, params=params).status_code, 200)
-        self.assertEqual(self.client.delete(endpoint, params=params).status_code, 404)
-        self.assertEqual(self.client.post(endpoint, params=params).status_code, 200)
-        self.assertEqual(activities["Chess Club"]["participants"].count(params["email"]), 1)
+    # Act
+    response = client.delete(endpoint, params=params)
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Activity not found"}
+    assert activities == activity_snapshot
+
+
+def test_unregister_missing_participant(client, activity_snapshot):
+    # Arrange
+    endpoint = "/activities/Chess%20Club/signup"
+    params = {"email": "missing@mergington.edu"}
+
+    # Act
+    response = client.delete(endpoint, params=params)
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Participant not registered for this activity"}
+    assert activities == activity_snapshot
+
+
+def test_repeated_unregister_is_rejected_without_mutation(client, activity_snapshot):
+    # Arrange
+    endpoint = "/activities/Chess%20Club/signup"
+    email = activity_snapshot["Chess Club"]["participants"][0]
+    params = {"email": email}
+    initial_removal = client.delete(endpoint, params=params)
+    expected = deepcopy(activity_snapshot)
+    expected["Chess Club"]["participants"].remove(email)
+
+    # Act
+    response = client.delete(endpoint, params=params)
+
+    # Assert
+    assert initial_removal.status_code == 200
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Participant not registered for this activity"}
+    assert activities == expected
+
+
+def test_participant_can_register_again_after_removal(client, activity_snapshot):
+    # Arrange
+    endpoint = "/activities/Chess%20Club/signup"
+    email = activity_snapshot["Chess Club"]["participants"][0]
+    params = {"email": email}
+    initial_removal = client.delete(endpoint, params=params)
+    expected = deepcopy(activity_snapshot)
+    expected["Chess Club"]["participants"].remove(email)
+    expected["Chess Club"]["participants"].append(email)
+
+    # Act
+    response = client.post(endpoint, params=params)
+    listing = client.get("/activities")
+
+    # Assert
+    assert initial_removal.status_code == 200
+    assert response.status_code == 200
+    assert response.json() == {"message": f"Signed up {email} for Chess Club"}
+    assert listing.status_code == 200
+    assert listing.json() == expected
+    assert activities == expected
+    assert activities["Chess Club"]["participants"].count(email) == 1
+
+
+def test_unregister_last_participant_leaves_empty_list(client, activity_snapshot):
+    # Arrange
+    email = "last@mergington.edu"
+    activities["Chess Club"]["participants"] = [email]
+    expected = deepcopy(activity_snapshot)
+    expected["Chess Club"]["participants"] = []
+
+    # Act
+    response = client.delete("/activities/Chess%20Club/signup", params={"email": email})
+    listing = client.get("/activities")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"message": f"Unregistered {email} from Chess Club"}
+    assert listing.status_code == 200
+    assert listing.json()["Chess Club"]["participants"] == []
+    assert listing.json() == expected
+    assert activities == expected
